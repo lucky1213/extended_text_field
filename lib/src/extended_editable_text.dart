@@ -160,6 +160,7 @@ class ExtendedEditableText extends StatefulWidget {
     this.enableInteractiveSelection = true,
     this.scrollController,
     this.scrollPhysics,
+    this.autocorrectionTextRectColor,
     this.toolbarOptions = const ToolbarOptions(
         copy: true, cut: true, paste: true, selectAll: true),
     this.specialTextSpanBuilder,
@@ -398,6 +399,18 @@ class ExtendedEditableText extends StatefulWidget {
   ///
   /// Cannot be null.
   final Color cursorColor;
+
+  /// The color to use when painting the autocorrection Rect.
+  ///
+  /// For [CupertinoTextField]s, the value is set to the ambient
+  /// [CupertinoThemeData.primaryColor] with 20% opacity. For [TextField]s, the
+  /// value is null on non-iOS platforms and the same color used in [CupertinoTextField]
+  /// on iOS.
+  ///
+  /// Currently the autocorrection Rect only appears on iOS.
+  ///
+  /// Defaults to null, which disables autocorrection Rect painting.
+  final Color autocorrectionTextRectColor;
 
   /// The color to use when painting the background cursor aligned with the text
   /// while rendering the floating cursor.
@@ -799,6 +812,9 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
   // State lifecycle:
 
   @override
+  AutofillScope get currentAutofillScope => null;
+
+  @override
   void initState() {
     super.initState();
     widget.controller.addListener(_didChangeTextEditingValue);
@@ -820,8 +836,12 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_didAutoFocus && widget.autofocus) {
-      FocusScope.of(context).autofocus(widget.focusNode);
       _didAutoFocus = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          FocusScope.of(context).autofocus(widget.focusNode);
+        }
+      });
     }
   }
 
@@ -879,7 +899,19 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
 
   // TextInputClient implementation:
 
-  TextEditingValue _lastKnownRemoteTextEditingValue;
+  // _lastFormattedUnmodifiedTextEditingValue tracks the last value
+  // that the formatter ran on and is used to prevent double-formatting.
+  TextEditingValue _lastFormattedUnmodifiedTextEditingValue;
+  // _lastFormattedValue tracks the last post-format value, so that it can be
+  // reused without rerunning the formatter when the input value is repeated.
+  TextEditingValue _lastFormattedValue;
+  // _receivedRemoteTextEditingValue is the direct value last passed in
+  // updateEditingValue. This value does not get updated with the formatted
+  // version.
+  TextEditingValue _receivedRemoteTextEditingValue;
+
+  @override
+  TextEditingValue get currentTextEditingValue => _value;
 
   @override
   void updateEditingValue(TextEditingValue value) {
@@ -888,18 +920,19 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
     if (widget.readOnly) {
       return;
     }
+    _receivedRemoteTextEditingValue = value;
 
     value = _handleSpecialTextSpan(value);
     if (value.text != _value.text) {
       _hideSelectionOverlayIfNeeded();
       _showCaretOnScreen();
+      _currentPromptRectRange = null;
       if (widget.obscureText && value.text.length == _value.text.length + 1) {
         _obscureShowCharTicksPending = _kObscureShowLatestCharCursorTicks;
         _obscureLatestCharIndex = _value.selection.baseOffset;
       }
     }
 
-    _lastKnownRemoteTextEditingValue = value;
     _formatAndSetValue(value);
 
     // To keep the cursor from blinking while typing, we want to restart the
@@ -953,7 +986,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
         break;
       default:
         // Finalize editing, but don't give up focus because this keyboard
-        //  action does not imply the user is done inputting information.
+        // action does not imply the user is done inputting information.
         _finalizeEditing(false);
         break;
     }
@@ -1083,9 +1116,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
   void _updateRemoteEditingValueIfNeeded() {
     if (!_hasInputConnection) return;
     final TextEditingValue localValue = _value;
-    if (localValue == _lastKnownRemoteTextEditingValue) return;
-    _lastKnownRemoteTextEditingValue = localValue;
-
+    if (localValue == _receivedRemoteTextEditingValue) return;
     _textInputConnection.setEditingState(localValue);
   }
 
@@ -1129,7 +1160,8 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
       // Clamp the final results to prevent programmatically scrolling to
       // out-of-paragraph-bounds positions when encountering tall fonts/scripts that
       // extend past the ascent.
-      scrollOffset = scrollOffset.clamp(0.0, renderEditable.maxScrollExtent);
+      scrollOffset =
+          scrollOffset.clamp(0.0, renderEditable.maxScrollExtent) as double;
     }
     return scrollOffset;
   }
@@ -1151,7 +1183,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
     }
     if (!_hasInputConnection) {
       final TextEditingValue localValue = _value;
-      _lastKnownRemoteTextEditingValue = localValue;
+      _lastFormattedUnmodifiedTextEditingValue = localValue;
       _textInputConnection = TextInput.attach(
         this,
         TextInputConfiguration(
@@ -1189,7 +1221,8 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
     if (_hasInputConnection) {
       _textInputConnection.close();
       _textInputConnection = null;
-      _lastKnownRemoteTextEditingValue = null;
+      _lastFormattedUnmodifiedTextEditingValue = null;
+      _receivedRemoteTextEditingValue = null;
     }
   }
 
@@ -1207,7 +1240,8 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
     if (_hasInputConnection) {
       _textInputConnection.connectionClosedReceived();
       _textInputConnection = null;
-      _lastKnownRemoteTextEditingValue = null;
+      _lastFormattedUnmodifiedTextEditingValue = null;
+      _receivedRemoteTextEditingValue = null;
       _finalizeEditing(true);
     }
   }
@@ -1245,6 +1279,10 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
 
   void _handleSelectionChanged(
       TextSelection selection, SelectionChangedCause cause) {
+    // We return early if the selection is not valid. This can happen when the
+    // text of [EditableText] is updated at the same time as the selection is
+    // changed by a gesture event.
+    if (!widget.controller.isSelectionWithinTextBounds(selection)) return;
     if (renderEditable?.handleSpecialText ?? false) {
       var value = correctCaretOffset(
           _value, renderEditable?.text, _textInputConnection,
@@ -1286,7 +1324,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
 
   void createSelectionOverlay({
     ExtendedRenderEditable renderObject,
-    bool showHandles: true,
+    bool showHandles = true,
   }) {
     _selectionOverlay = ExtendedTextSelectionOverlay(
       context: context,
@@ -1392,6 +1430,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
 
   void _formatAndSetValue(TextEditingValue value, {bool set: false}) {
     final bool textChanged = _value?.text != value?.text;
+    final bool isRepeat = value == _lastFormattedUnmodifiedTextEditingValue;
     //https://github.com/flutter/flutter/issues/36048
     if (textChanged) {
       _hideSelectionOverlayIfNeeded();
@@ -1399,14 +1438,25 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
     if (textChanged &&
         widget.inputFormatters != null &&
         widget.inputFormatters.isNotEmpty) {
-      for (TextInputFormatter formatter in widget.inputFormatters)
+      for (final TextInputFormatter formatter in widget.inputFormatters) {
         value = formatter.formatEditUpdate(_value, value);
-      _value = value;
-      _updateRemoteEditingValueIfNeeded();
-    } else {
-      _value = value;
+      }
+      _lastFormattedValue = value;
     }
+
+    // Setting _value here ensures the selection and composing region info is passed.
+    _value = value;
+    // Use the last formatted value when an identical repeat pass is detected.
+    if (isRepeat && textChanged && _lastFormattedValue != null) {
+      _value = _lastFormattedValue;
+    }
+
+    // Always attempt to send the value. If the value has changed, then it will send,
+    // otherwise, it will short-circuit.
+    _updateRemoteEditingValueIfNeeded();
+
     if (textChanged && widget.onChanged != null) widget.onChanged(value.text);
+    _lastFormattedUnmodifiedTextEditingValue = _receivedRemoteTextEditingValue;
   }
 
   void _onCursorColorTick() {
@@ -1428,7 +1478,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
   Duration get cursorBlinkInterval => _kCursorBlinkHalfPeriod;
 
   /// The current status of the text selection handles.
-  //@visibleForTesting
+  @visibleForTesting
   ExtendedTextSelectionOverlay get selectionOverlay => _selectionOverlay;
 
   int _obscureShowCharTicksPending = 0;
@@ -1498,7 +1548,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
 
   void _didChangeTextEditingValue() {
     final bool textChanged =
-        _value?.text != _lastKnownRemoteTextEditingValue?.text;
+        _value?.text != _lastFormattedUnmodifiedTextEditingValue?.text;
     //https://github.com/flutter/flutter/issues/36048
     if (textChanged) {
       _hideSelectionOverlayIfNeeded();
@@ -1507,7 +1557,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
     _startOrStopCursorTimerIfNeeded();
     _updateOrDisposeSelectionOverlayIfNeeded();
     _textChangedSinceLastCaretUpdate = true;
-    // (abarth): Teach RenderEditable about ValueNotifier<TextEditingValue>
+    // TODO(abarth): Teach RenderEditable about ValueNotifier<TextEditingValue>
     // to avoid this setState().
     setState(() {/* We use widget.controller.value in build(). */});
   }
@@ -1530,6 +1580,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
       WidgetsBinding.instance.removeObserver(this);
       // Clear the selection and composition state if this widget lost focus.
       _value = TextEditingValue(text: _value.text);
+      _currentPromptRectRange = null;
     }
     updateKeepAlive();
   }
@@ -1557,7 +1608,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
   /// This property is typically used to notify the renderer of input gestures
   /// when [ignorePointer] is true. See [RenderEditable.ignorePointer].
   ExtendedRenderEditable get renderEditable =>
-      _editableKey.currentContext.findRenderObject();
+      _editableKey.currentContext.findRenderObject() as ExtendedRenderEditable;
 
   @override
   TextEditingValue get textEditingValue => _value;
@@ -1591,10 +1642,10 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
       return false;
     }
 
-    if (_selectionOverlay == null &&
-        FocusScope.of(context).focusedChild == widget.focusNode) {
-      createSelectionOverlay();
-    }
+    // if (_selectionOverlay == null &&
+    //     FocusScope.of(context).focusedChild == widget.focusNode) {
+    //   createSelectionOverlay();
+    // }
 
     if (_selectionOverlay == null || _selectionOverlay.toolbarIsVisible) {
       return false;
@@ -1617,6 +1668,16 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
     } else {
       showToolbar();
     }
+  }
+
+  // null if no promptRect should be shown.
+  TextRange _currentPromptRectRange;
+
+  @override
+  void showAutocorrectionPromptRect(int start, int end) {
+    setState(() {
+      _currentPromptRectRange = TextRange(start: start, end: end);
+    });
   }
 
   VoidCallback _semanticsOnCopy(TextSelectionControls controls) {
@@ -1769,7 +1830,7 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
 
     String text = _value.text;
     if (widget.obscureText) {
-      text = RenderEditable.obscuringCharacter * text.length;
+      text = '•' * text.length;
       final int o =
           _obscureShowCharTicksPending > 0 ? _obscureLatestCharIndex : null;
       if (o != null && o >= 0 && o < text.length)
@@ -1786,9 +1847,6 @@ class ExtendedEditableTextState extends State<ExtendedEditableText>
 
     return TextSpan(style: widget.style, text: text);
   }
-
-  @override
-  TextEditingValue get currentTextEditingValue => _value;
 }
 
 class _Editable extends MultiChildRenderObjectWidget {

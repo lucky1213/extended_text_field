@@ -602,8 +602,8 @@ class ExtendedTextField extends StatefulWidget {
   }
 }
 
-class _ExtendedTextFieldState extends State<ExtendedTextField>
-    implements ExtendedTextSelectionGestureDetectorBuilderDelegate {
+class _ExtendedTextFieldState extends State<ExtendedTextField> 
+    implements ExtendedTextSelectionGestureDetectorBuilderDelegate{
   TextEditingController _controller;
   TextEditingController get _effectiveController =>
       widget.controller ?? _controller;
@@ -618,8 +618,6 @@ class _ExtendedTextFieldState extends State<ExtendedTextField>
       widget.maxLength != null &&
       widget.decoration != null &&
       widget.decoration.counterText == null;
-
-  bool _shouldShowSelectionToolbar = true;
 
   bool _showSelectionHandles = false;
   CommonTextSelectionGestureDetectorBuilder _selectionGestureDetectorBuilder;
@@ -689,7 +687,7 @@ class _ExtendedTextFieldState extends State<ExtendedTextField>
       // Show the maxLength in the counter
       counterText += '/${widget.maxLength}';
       final int remaining =
-          (widget.maxLength - currentLength).clamp(0, widget.maxLength);
+          (widget.maxLength - currentLength).clamp(0, widget.maxLength) as int;
       semanticCounterText =
           localizations.remainingTextFieldCharacterCount(remaining);
 
@@ -715,18 +713,19 @@ class _ExtendedTextFieldState extends State<ExtendedTextField>
   void initState() {
     super.initState();
     _selectionGestureDetectorBuilder =
-        CommonTextSelectionGestureDetectorBuilder(
-      delegate: this,
-      hideToolbar: () {
-        _editableText.hideToolbar();
-      },
-      showToolbar: () {
-        _editableText.showToolbar();
-      },
-      onTap: widget.onTap,
-      context: context,
-      requestKeyboard: _requestKeyboard,
-    );
+      CommonTextSelectionGestureDetectorBuilder(
+        delegate: this,
+        hideToolbar: () {
+          _editableText.hideToolbar();
+        },
+        showToolbar: () {
+          _editableText.showToolbar();
+        },
+        onTap: widget.onTap,
+        context: context,
+        requestKeyboard: _requestKeyboard,
+      );
+    
     if (widget.controller == null) {
       _controller = TextEditingController();
     }
@@ -763,16 +762,20 @@ class _ExtendedTextFieldState extends State<ExtendedTextField>
   bool _shouldShowSelectionHandles(SelectionChangedCause cause) {
     // When the text field is activated by something that doesn't trigger the
     // selection overlay, we shouldn't show the handles either.
-    if (!_shouldShowSelectionToolbar) return false;
+    if (!_selectionGestureDetectorBuilder.shouldShowSelectionToolbar)
+      return false;
 
-    if (cause == SelectionChangedCause.keyboard) return false;
+    if (cause == SelectionChangedCause.keyboard)
+      return false;
 
     if (widget.readOnly && _effectiveController.selection.isCollapsed)
       return false;
 
-    if (cause == SelectionChangedCause.longPress) return true;
+    if (cause == SelectionChangedCause.longPress)
+      return true;
 
-    if (_effectiveController.text.isNotEmpty) return true;
+    if (_effectiveController.text.isNotEmpty)
+      return true;
 
     return false;
   }
@@ -786,17 +789,16 @@ class _ExtendedTextFieldState extends State<ExtendedTextField>
       });
     }
     switch (Theme.of(context).platform) {
-      case TargetPlatform.android:
-      case TargetPlatform.fuchsia:
-        // case TargetPlatform.macOS:
-        // Do nothing.
-        break;
       case TargetPlatform.iOS:
-      default:
+      case TargetPlatform.macOS:
         if (cause == SelectionChangedCause.longPress) {
           _editableText?.bringIntoView(selection.base);
         }
-        break;
+        return;
+      case TargetPlatform.android:
+      case TargetPlatform.fuchsia:
+      case TargetPlatform.linux:
+      case TargetPlatform.windows:
     }
   }
 
@@ -829,7 +831,7 @@ class _ExtendedTextFieldState extends State<ExtendedTextField>
     );
 
     final ThemeData themeData = Theme.of(context);
-    final TextStyle style = themeData.textTheme.subhead.merge(widget.style);
+    final TextStyle style = themeData.textTheme.subtitle1.merge(widget.style);
     final Brightness keyboardAppearance =
         widget.keyboardAppearance ?? themeData.primaryColorBrightness;
     final TextEditingController controller = _effectiveController;
@@ -849,17 +851,18 @@ class _ExtendedTextFieldState extends State<ExtendedTextField>
     switch (themeData.platform) {
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
+      case TargetPlatform.linux:
+      case TargetPlatform.windows:
         forcePressEnabled = false;
-        textSelectionControls ??= extendedMaterialTextSelectionControls;
+        textSelectionControls ??= materialTextSelectionControls;
         paintCursorAboveText = false;
         cursorOpacityAnimates = false;
         cursorColor ??= themeData.cursorColor;
         break;
       case TargetPlatform.iOS:
-      default:
-        //case TargetPlatform.macOS:
+      case TargetPlatform.macOS:
         forcePressEnabled = true;
-        textSelectionControls ??= extendedCupertinoTextSelectionControls;
+        textSelectionControls ??= cupertinoTextSelectionControls;
         paintCursorAboveText = true;
         cursorOpacityAnimates = true;
         cursorColor ??= CupertinoTheme.of(context).primaryColor;

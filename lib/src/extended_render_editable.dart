@@ -1542,9 +1542,12 @@ class ExtendedRenderEditable extends ExtendedTextSelectionRenderObject {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
+      case TargetPlatform.linux:
+      case TargetPlatform.windows:
         return Rect.fromLTWH(0.0, _kCaretHeightOffset, cursorWidth,
             preferredLineHeight - 2.0 * _kCaretHeightOffset);
       case TargetPlatform.iOS:
+      case TargetPlatform.macOS:
       default:
         return Rect.fromLTWH(0.0, 0.0, cursorWidth, preferredLineHeight + 2);
     }
@@ -1627,6 +1630,7 @@ class ExtendedRenderEditable extends ExtendedTextSelectionRenderObject {
     if (fullHeight != null) {
       switch (defaultTargetPlatform) {
         case TargetPlatform.iOS:
+        case TargetPlatform.macOS:
           {
 //            final double heightDiff = fullHeight - caretRect.height;
 //            // Center the caret vertically along the text.
